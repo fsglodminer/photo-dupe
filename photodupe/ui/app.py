@@ -47,7 +47,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self.library = library
         self._palette = palette_for(settings.theme)
         self._workers: dict[str, Worker] = {}
-        self._group_cache: list[DuplicateGroup] = []
+        #: Duplicate groups, shared between the Duplicates and Export pages.
+        #: ``None`` means "not worked out yet", which is different from
+        #: an empty list meaning "looked, found none".
+        self._group_cache: list[DuplicateGroup] | None = None
 
         self.thumbnail_loader = ThumbnailLoader(
             max_workers=max(2, min(6, settings.thread_count()))
@@ -191,18 +194,24 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def library_changed(self) -> None:
         """The index changed: drop caches and let every page catch up."""
-        self._group_cache = []
+        self._group_cache = None
         current = self.stack.currentWidget()
         for page in self.pages.values():
             if page is current:
                 page.refresh()
         self.pages["library"].refresh()
 
-    def duplicate_groups_cached(self) -> Sequence[DuplicateGroup]:
-        """Groups for the export page, computed once and reused."""
-        if not self._group_cache:
-            self._group_cache = self.library.duplicate_groups()
+    def cached_groups(self) -> list[DuplicateGroup] | None:
+        """Duplicate groups if they have already been worked out, else ``None``.
+
+        Grouping a large library takes seconds, so it is never done on the GUI
+        thread. Pages that need groups ask for the cache and, if it is empty,
+        start a background job.
+        """
         return self._group_cache
+
+    def set_group_cache(self, groups: Sequence[DuplicateGroup]) -> None:
+        self._group_cache = list(groups)
 
     def export_selection(self, photos: Sequence[Photo]) -> None:
         export_page = self.pages["export"]

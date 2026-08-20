@@ -4,9 +4,12 @@ The naive approach -- compare every photo with every other -- is O(n^2) and
 falls over on a real library (50k photos is 1.25 billion comparisons). Instead:
 
 1. Byte-identical files are grouped straight from their SHA-256.
-2. Near-duplicates are found with a **BK-tree** over the perceptual hashes.
-   Because Hamming distance is a metric, the triangle inequality prunes most of
-   the tree on every lookup, so a search is closer to O(log n) than O(n).
+2. Near-duplicates are found with a **multi-index hash** over the perceptual
+   hashes: split each fingerprint into four segments, and two hashes within the
+   threshold must match closely in at least one of them. That turns the search
+   into a few dictionary lookups per photo instead of a scan. (A BK-tree is
+   kept for the unusually loose thresholds where the segment arithmetic stops
+   paying off.)
 3. Candidate pairs are then *verified* against the difference hash and the
    colour signature before being accepted. pHash alone produces occasional
    false positives on flat or highly symmetrical images; requiring two
@@ -126,6 +129,131 @@ class BKTree:
 
 
 # ---------------------------------------------------------------------------
+# multi-index hashing
+# ---------------------------------------------------------------------------
+
+class MultiIndexHash:
+    """Exact Hamming-radius search by the pigeonhole principle.
+
+    A BK-tree is elegant but prunes badly on hash-like data: pairwise distances
+    between 64-bit fingerprints cluster near 32 bits, so a radius-10 query still
+    has to visit most of the tree. Measured on synthetic libraries it goes
+    quadratic, which is exactly what it was supposed to avoid.
+
+    Multi-index hashing sidesteps the problem. Split each hash into ``k``
+    segments; if two hashes differ by at most ``d`` bits in total, then at least
+    one segment must differ by at most ``d // k`` bits -- there is nowhere else
+    for the differing bits to go. So indexing each segment in its own dictionary
+    and looking up every value within that small per-segment radius finds every
+    true match, with no false negatives, in a handful of dictionary lookups.
+
+    Four 16-bit segments is the useful operating point: wide enough that buckets
+    stay small, narrow enough that enumerating a radius-2 neighbourhood is only
+    137 lookups.
+    """
+
+    SEGMENTS = 4
+    SEGMENT_BITS = HASH_BITS // SEGMENTS
+    SEGMENT_MASK = (1 << SEGMENT_BITS) - 1
+    #: Beyond a per-segment radius of 3 the neighbourhood to enumerate grows
+    #: faster than the candidates it saves, and the BK-tree takes over.
+    MAX_SEGMENT_RADIUS = 3
+    MAX_SUPPORTED_DISTANCE = SEGMENTS * MAX_SEGMENT_RADIUS + (SEGMENTS - 1)
+
+    _MASK_CACHE: dict[int, tuple[int, ...]] = {}
+
+    def __init__(self, max_distance: int) -> None:
+        self.max_distance = max(0, max_distance)
+        self.radius = self.max_distance // self.SEGMENTS
+        self._tables: list[dict[int, list[int]]] = [
+            defaultdict(list) for _ in range(self.SEGMENTS)
+        ]
+        # Values are kept as integers: verification then costs one XOR and a
+        # popcount per candidate, with no hex parsing in the inner loop.
+        self._values: dict[int, int] = {}
+        self._count = 0
+
+    def __len__(self) -> int:
+        return self._count
+
+    @classmethod
+    def supports(cls, max_distance: int) -> bool:
+        return 0 <= max_distance <= cls.MAX_SUPPORTED_DISTANCE
+
+    # ------------------------------------------------------------------
+    @classmethod
+    def _flip_masks(cls, radius: int) -> tuple[int, ...]:
+        """Every bit pattern with at most ``radius`` bits set, cached."""
+        cached = cls._MASK_CACHE.get(radius)
+        if cached is not None:
+            return cached
+        masks = [0]
+        bits = range(cls.SEGMENT_BITS)
+        if radius >= 1:
+            masks.extend(1 << i for i in bits)
+        if radius >= 2:
+            masks.extend(
+                (1 << i) | (1 << j) for i in bits for j in range(i + 1, cls.SEGMENT_BITS)
+            )
+        if radius >= 3:
+            masks.extend(
+                (1 << i) | (1 << j) | (1 << k)
+                for i in bits
+                for j in range(i + 1, cls.SEGMENT_BITS)
+                for k in range(j + 1, cls.SEGMENT_BITS)
+            )
+        result = tuple(masks)
+        cls._MASK_CACHE[radius] = result
+        return result
+
+    def _segments(self, value: int) -> list[int]:
+        return [
+            (value >> (index * self.SEGMENT_BITS)) & self.SEGMENT_MASK
+            for index in range(self.SEGMENTS)
+        ]
+
+    # ------------------------------------------------------------------
+    def add(self, key: str, item: int) -> None:
+        try:
+            value = int(key, 16)
+        except (TypeError, ValueError):
+            return
+        self._count += 1
+        self._values[item] = value
+        for index, segment in enumerate(self._segments(value)):
+            self._tables[index][segment].append(item)
+
+    def query(self, key: str, max_distance: int) -> list[tuple[int, int]]:
+        """Return ``(item, distance)`` for every entry within ``max_distance``."""
+        try:
+            value = int(key, 16)
+        except (TypeError, ValueError):
+            return []
+        masks = self._flip_masks(max_distance // self.SEGMENTS)
+
+        candidates: set[int] = set()
+        for index, segment in enumerate(self._segments(value)):
+            table = self._tables[index]
+            for mask in masks:
+                found = table.get(segment ^ mask)
+                if found:
+                    candidates.update(found)
+
+        values = self._values
+        results: list[tuple[int, int]] = []
+        for item in candidates:
+            distance = (value ^ values[item]).bit_count()
+            if distance <= max_distance:
+                results.append((item, distance))
+        return results
+
+
+def build_index(max_distance: int) -> "MultiIndexHash | BKTree":
+    """Pick the search structure that suits this threshold."""
+    return MultiIndexHash(max_distance) if MultiIndexHash.supports(max_distance) else BKTree()
+
+
+# ---------------------------------------------------------------------------
 # grouping
 # ---------------------------------------------------------------------------
 
@@ -199,18 +327,12 @@ def build_groups(
                     union.union(first, other)
 
     # --- pass 2: perceptual near-duplicates ----------------------------
-    tree = BKTree()
-    for photo in usable:
-        tree.add(photo.phash, photo.id)
-        if settings.detect_rotations and rotations:
-            # Index the rotated variants too, all pointing back at the same
-            # photo, so an upright frame finds its sideways copy.
-            for variant in (rotations.get(photo.id) or [])[1:]:
-                tree.add(variant, photo.id)
-
     threshold = max(0, min(HASH_BITS, settings.similarity_threshold))
+    index = build_index(threshold)
     for done, photo in enumerate(usable, start=1):
-        for other_id, _distance in tree.query(photo.phash, threshold):
+        # Query before inserting: a photo only ever has to be compared with the
+        # ones already indexed, so each pair is examined once instead of twice.
+        for other_id, _distance in index.query(photo.phash, threshold):
             if other_id == photo.id:
                 continue
             if union.find(other_id) == union.find(photo.id):
@@ -218,6 +340,14 @@ def build_groups(
             other = by_id.get(other_id)
             if other is not None and _verify(photo, other, settings):
                 union.union(photo.id, other_id)
+
+        index.add(photo.phash, photo.id)
+        if settings.detect_rotations and rotations:
+            # Index the rotated variants too, all pointing back at the same
+            # photo, so an upright frame finds its sideways copy.
+            for variant in (rotations.get(photo.id) or [])[1:]:
+                index.add(variant, photo.id)
+
         if progress is not None and done % 64 == 0:
             if progress(done, total) is False:
                 return []

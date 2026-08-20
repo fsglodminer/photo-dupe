@@ -172,6 +172,8 @@ class DuplicatesPage(Page):
     @QtCore.Slot(object)
     def _on_groups(self, groups: list[DuplicateGroup]) -> None:
         self._groups = groups
+        # Share the result so the Export page does not have to recompute it.
+        self.context.set_group_cache(groups)
         self._populate_list()
         stats = group_statistics(groups)
         self.stat_groups.set_value(f"{stats['groups']:,}")

@@ -8,6 +8,7 @@ from pathlib import Path
 from PySide6 import QtCore, QtWidgets
 
 from ...config import QualityWeights, Settings
+from ...grouping import MultiIndexHash
 from ...hashing import HASH_BITS
 from ...quality import METRIC_LABELS
 from ..icons import icon
@@ -261,6 +262,10 @@ class SettingsPage(Page):
             wording = "Loose: catches more, but may group photos that merely resemble each other."
         else:
             wording = "Very loose: expect unrelated photos to be grouped together."
+        # Past the point where the fast index can be used, comparing a large
+        # library gets noticeably slower -- worth saying so before they wait.
+        if value > MultiIndexHash.MAX_SUPPORTED_DISTANCE:
+            wording += " Comparing a large library will take considerably longer."
         self.similarity_label.setText(f"Threshold {value} of {HASH_BITS} bits - {wording}")
         if not self._loading:
             self.context.settings.similarity_threshold = value

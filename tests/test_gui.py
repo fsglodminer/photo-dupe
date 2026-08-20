@@ -295,9 +295,6 @@ def test_export_page_resolves_each_selection(window):
     page.selection.setCurrentIndex(page.selection.findData("all"))
     assert len(page._resolve()) == 10
 
-    page.selection.setCurrentIndex(page.selection.findData("keepers"))
-    assert len(page._resolve()) == 6      # 10 photos, 4 surplus duplicates
-
     page.selection.setCurrentIndex(page.selection.findData("top"))
     page.top_count.setValue(3)
     assert len(page._resolve()) == 3
@@ -306,6 +303,43 @@ def test_export_page_resolves_each_selection(window):
     assert page._resolve() == []
     page.set_explicit_selection(window.library.ranked()[:2])
     assert len(page._resolve()) == 2
+
+
+def test_export_waits_for_grouping_rather_than_blocking(window):
+    """Grouping runs in the background, so the page must cope with 'not yet'."""
+    page = window.pages["export"]
+    window.go_to("export")
+    assert window.cached_groups() is None
+
+    page.selection.setCurrentIndex(page.selection.findData("keepers"))
+    assert page._resolve() == []                       # nothing to offer yet
+    assert "duplicates" in page.preview_label.text().lower()
+    assert not page.run_button.isEnabled()
+
+    # once the groups arrive, the same selection resolves properly
+    window.set_group_cache(window.library.duplicate_groups())
+    page._update_preview()
+    assert len(page._resolve()) == 6                   # 10 photos, 4 surplus
+    assert page.run_button.isEnabled()
+
+
+def test_the_duplicates_page_shares_its_result_with_export(window):
+    duplicates = window.pages["duplicates"]
+    window.go_to("duplicates")
+    duplicates._on_groups(window.library.duplicate_groups())
+
+    assert window.cached_groups() is not None
+    window.go_to("export")
+    export = window.pages["export"]
+    export.selection.setCurrentIndex(export.selection.findData("keepers"))
+    assert len(export._resolve()) == 6                 # no recomputation needed
+
+
+def test_changing_the_library_invalidates_the_group_cache(window):
+    window.set_group_cache(window.library.duplicate_groups())
+    assert window.cached_groups() is not None
+    window.library_changed()
+    assert window.cached_groups() is None
 
 
 def test_export_selection_hands_over_from_the_ranking_page(window):

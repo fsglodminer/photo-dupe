@@ -312,8 +312,8 @@ class ExportPage(_TransferPage):
         palette = self.palette_
         settings = context.settings
         self._worker = None
+        self._group_worker = None
         self._explicit: list[Photo] = []
-        self._groups: Sequence = []
 
         self.selection = QtWidgets.QComboBox()
         for key, label in self.SELECTIONS:
@@ -376,6 +376,7 @@ class ExportPage(_TransferPage):
 
         self.group_folders = QtWidgets.QCheckBox("One subfolder per duplicate group")
         self.group_folders.setChecked(settings.export_group_folders)
+        self.group_folders.toggled.connect(lambda _: self._update_preview())
 
         self.preview_label = make_label("", "Muted", wrap=True)
         self.run_button = QtWidgets.QPushButton("Export photos")
@@ -437,6 +438,48 @@ class ExportPage(_TransferPage):
         self._update_preview()
 
     # ------------------------------------------------------------------
+    def _needs_groups(self) -> bool:
+        return (
+            self.selection.currentData() == "keepers"
+            or self.group_folders.isChecked()
+        )
+
+    def _ensure_groups(self) -> bool:
+        """Make sure duplicate groups exist, computing them in the background.
+
+        Returns ``True`` when they are ready now. Grouping a large library takes
+        seconds, so it must never run on the GUI thread -- a frozen window is a
+        worse answer than a moment's wait with a progress message.
+        """
+        if self.context.cached_groups() is not None:
+            return True
+        if self._group_worker is not None:
+            return False
+        worker = self.context.run_worker(
+            "duplicates",
+            lambda progress: self.context.library.duplicate_groups(
+                progress=lambda done, total: progress(done, total, "Comparing photos")
+            ),
+        )
+        if worker is None:
+            return False
+        self._group_worker = worker
+        worker.succeeded.connect(self._on_groups_ready)
+        worker.failed.connect(
+            lambda message: self.context.notify(
+                "Could not compare photos", message, "error"
+            )
+        )
+        worker.done.connect(self._on_group_worker_done)
+        return False
+
+    def _on_groups_ready(self, groups) -> None:
+        self.context.set_group_cache(groups)
+
+    def _on_group_worker_done(self) -> None:
+        self._group_worker = None
+        self._update_preview()
+
     def _resolve(self) -> list[Photo]:
         key = self.selection.currentData()
         db = self.context.library.db
@@ -446,9 +489,8 @@ class ExportPage(_TransferPage):
             return db.photos(sort="score", mark=MARK_KEEP)
         everything = db.photos(sort="score")
         if key == "keepers":
-            if not self._groups:
-                self._groups = self.context.duplicate_groups_cached()
-            return keepers_only(self._groups, everything)
+            groups = self.context.cached_groups()
+            return keepers_only(groups or [], everything) if groups is not None else []
         if key == "top":
             return top_ranked(everything, self.top_count.value())
         if key == "min_score":
@@ -456,6 +498,10 @@ class ExportPage(_TransferPage):
         return everything
 
     def _update_preview(self) -> None:
+        if self._needs_groups() and not self._ensure_groups():
+            self.preview_label.setText("Working out which photos are duplicates...")
+            self.run_button.setEnabled(False)
+            return
         try:
             photos = self._resolve()
         except Exception:  # noqa: BLE001 - preview must never break the page
@@ -520,9 +566,7 @@ class ExportPage(_TransferPage):
             if answer != QtWidgets.QMessageBox.StandardButton.Yes:
                 return
 
-        groups = self._groups if settings.export_group_folders else None
-        if settings.export_group_folders and not groups:
-            groups = self.context.duplicate_groups_cached()
+        groups = self.context.cached_groups() if settings.export_group_folders else None
 
         self._set_busy(True)
         self.log.setPlainText("Working...")

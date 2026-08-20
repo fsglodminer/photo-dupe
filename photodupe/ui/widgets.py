@@ -223,6 +223,13 @@ class RatingStars(QtWidgets.QWidget):
         painter.end()
 
 
+#: Preview images are decoded no larger than this on the long edge. Reading a
+#: 24 Mpx JPEG in full takes a couple of hundred milliseconds, which is a
+#: visible stutter when arrowing through a grid -- and every pixel beyond the
+#: panel's size would be thrown away anyway.
+PREVIEW_MAX_EDGE = 1600
+
+
 class PreviewLabel(QtWidgets.QLabel):
     """Shows one photo scaled to fit, reloading on resize."""
 
@@ -240,7 +247,7 @@ class PreviewLabel(QtWidgets.QLabel):
         if path == self._path:
             return
         self._path = path
-        self._source = QtGui.QPixmap(path) if path else QtGui.QPixmap()
+        self._source = _read_scaled(path) if path else QtGui.QPixmap()
         self._rescale()
 
     def clear_photo(self) -> None:
@@ -265,6 +272,24 @@ class PreviewLabel(QtWidgets.QLabel):
                 QtCore.Qt.TransformationMode.SmoothTransformation,
             )
         )
+
+
+def _read_scaled(path: str, max_edge: int = PREVIEW_MAX_EDGE) -> QtGui.QPixmap:
+    """Decode an image no bigger than ``max_edge``, honouring EXIF orientation.
+
+    QImageReader can scale during decoding rather than after it, so a large
+    JPEG never has to be expanded in memory at full size just to be shrunk.
+    """
+    reader = QtGui.QImageReader(path)
+    reader.setAutoTransform(True)          # apply the EXIF rotation
+    size = reader.size()
+    if size.isValid() and max(size.width(), size.height()) > max_edge:
+        scaled = size.scaled(
+            max_edge, max_edge, QtCore.Qt.AspectRatioMode.KeepAspectRatio
+        )
+        reader.setScaledSize(scaled)
+    image = reader.read()
+    return QtGui.QPixmap.fromImage(image) if not image.isNull() else QtGui.QPixmap()
 
 
 class PhotoDetails(QtWidgets.QWidget):

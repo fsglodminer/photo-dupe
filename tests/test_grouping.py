@@ -7,7 +7,15 @@ import random
 import pytest
 
 from photodupe.config import Settings
-from photodupe.grouping import BKTree, UnionFind, build_groups, group_statistics, pick_best
+from photodupe.grouping import (
+    BKTree,
+    MultiIndexHash,
+    UnionFind,
+    build_groups,
+    build_index,
+    group_statistics,
+    pick_best,
+)
 from photodupe.hashing import hamming
 from photodupe.records import Photo
 
@@ -62,6 +70,85 @@ def test_bktree_groups_identical_keys():
 
 def test_empty_bktree_query_is_empty():
     assert BKTree().query("0" * 16, 5) == []
+
+
+# ---------------------------------------------------------------------------
+# multi-index hashing
+# ---------------------------------------------------------------------------
+
+@pytest.fixture(scope="module")
+def hash_corpus():
+    """Random hashes plus deliberate near-neighbours at every useful distance."""
+    rng = random.Random(4242)
+    keys = [f"{rng.getrandbits(64):016x}" for _ in range(2000)]
+    for _ in range(400):
+        base = int(keys[rng.randrange(600)], 16)
+        for _ in range(rng.randrange(1, 18)):
+            base ^= 1 << rng.randrange(64)
+        keys.append(f"{base:016x}")
+    return keys
+
+
+@pytest.mark.parametrize("threshold", [0, 1, 4, 8, 10, 11, 12, 15])
+def test_multi_index_hash_is_exact(hash_corpus, threshold):
+    """No false negatives: it must find precisely what brute force finds."""
+    index = MultiIndexHash(threshold)
+    for item, key in enumerate(hash_corpus):
+        index.add(key, item)
+
+    for probe_index in (0, 7, 1200, len(hash_corpus) - 1):
+        probe = hash_corpus[probe_index]
+        found = sorted(item for item, _ in index.query(probe, threshold))
+        expected = sorted(
+            i for i, key in enumerate(hash_corpus) if hamming(probe, key) <= threshold
+        )
+        assert found == expected
+
+
+def test_multi_index_hash_reports_distances():
+    index = MultiIndexHash(4)
+    index.add("0" * 16, 1)
+    index.add("0" * 15 + "3", 2)      # two bits away
+    assert dict(index.query("0" * 16, 4)) == {1: 0, 2: 2}
+
+
+def test_multi_index_hash_ignores_unusable_keys():
+    index = MultiIndexHash(4)
+    index.add("not a hash", 1)
+    index.add("", 2)
+    assert len(index) == 0
+    assert index.query("zzzz", 4) == []
+    assert index.query("0" * 16, 4) == []
+
+
+def test_index_choice_follows_the_threshold():
+    assert isinstance(build_index(0), MultiIndexHash)
+    assert isinstance(build_index(10), MultiIndexHash)
+    assert isinstance(build_index(15), MultiIndexHash)
+    assert isinstance(build_index(20), BKTree)      # too loose for the segments
+    assert isinstance(build_index(64), BKTree)
+
+
+def test_both_index_structures_group_the_same_photos():
+    """The BK-tree fallback must not change any answers."""
+    rng = random.Random(11)
+    photos = []
+    for pid in range(150):
+        value = rng.getrandbits(64)
+        photos.append(_photo(pid, f"{value:016x}"))
+        if pid % 5 == 0:                              # a near copy of this one
+            near = value ^ (1 << rng.randrange(64))
+            photos.append(_photo(1000 + pid, f"{near:016x}"))
+
+    tight = build_groups(photos, Settings(similarity_threshold=6))
+    loose = build_groups(photos, Settings(similarity_threshold=20))
+    assert isinstance(build_index(6), MultiIndexHash)
+    assert isinstance(build_index(20), BKTree)
+    # Every group the strict pass found must survive the looser one.
+    tight_sets = [{p.id for p in group.photos} for group in tight]
+    loose_sets = [{p.id for p in group.photos} for group in loose]
+    for members in tight_sets:
+        assert any(members.issubset(other) for other in loose_sets)
 
 
 # ---------------------------------------------------------------------------

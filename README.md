@@ -6,6 +6,12 @@ with import and export around it.
 
 Built and tested on **Ubuntu 24.04**, Python 3.10+, PySide6 (Qt 6).
 
+![The Duplicates page](docs/screenshots/duplicates.png)
+
+*Reviewing a duplicate group. The suggested keeper is outlined in green; nothing
+is deleted until you confirm. (The sample images are synthetic test photos, so
+the app can be demonstrated without shipping anyone's holiday snaps.)*
+
 ---
 
 ## What it does
@@ -82,6 +88,11 @@ never touched either way):
 6. **Export** writes photos out: the whole library, one per duplicate group, the
    top N, or everything above a score.
 
+![The Ranking page](docs/screenshots/ranking.png)
+
+*Every photo scored out of 100, with the breakdown behind the number and the
+photo's percentile within the library.*
+
 ### Keyboard shortcuts
 
 | Shortcut | Action |
@@ -105,12 +116,31 @@ Each photo gets three 64-bit fingerprints and a colour signature:
 | Colour signature | — | rejecting same-shape/different-colour pairs |
 
 Comparing every photo with every other one is O(n²) — 1.25 billion comparisons
-for a 50,000 photo library. Instead the pHashes go into a **BK-tree**, where the
-triangle inequality prunes most of the tree on every lookup. Candidates are then
-checked against the difference hash *and* the colour signature before being
-accepted, because pHash alone produces occasional false positives on flat or
-symmetrical images. Accepted pairs are merged with **union-find**, so a burst of
-twelve near-identical frames becomes one group rather than sixty-six pairs.
+for a 50,000 photo library. Instead the pHashes go into a **multi-index hash**:
+each fingerprint is split into four 16-bit segments, and if two hashes differ by
+at most *d* bits in total then at least one segment must differ by at most *d/4*
+— there is nowhere else for the differing bits to go. Indexing each segment
+separately turns the search into a handful of dictionary lookups per photo, with
+no false negatives.
+
+Candidates are then checked against the difference hash *and* the colour
+signature before being accepted, because pHash alone produces occasional false
+positives on flat or symmetrical images. Accepted pairs are merged with
+**union-find**, so a burst of twelve near-identical frames becomes one group
+rather than sixty-six pairs.
+
+Measured on synthetic libraries at the default threshold:
+
+| Library size | Time to group |
+| --- | --- |
+| 5,000 | 0.3 s |
+| 20,000 | 1.9 s |
+| 50,000 | 8 s |
+| 100,000 | 30 s |
+
+(A BK-tree is kept as a fallback for thresholds above 15, where the segment
+arithmetic stops paying off. It is much slower — the same 20,000 photos take
+about 160 s — which is why the useful thresholds are the fast ones.)
 
 The **similarity threshold** in Settings is the number of differing bits (out of
 64) two photos may have. Lower is stricter:
@@ -162,6 +192,8 @@ re-compressed copy.
 
 Moving the weight sliders re-scores the whole library instantly — the
 measurements are stored, so only the arithmetic is redone. No rescan needed.
+
+![The Settings page](docs/screenshots/settings.png)
 
 ---
 
@@ -229,7 +261,7 @@ well they read depends on your Pillow build.
 python3 -m venv .venv
 .venv/bin/pip install -r requirements-dev.txt
 .venv/bin/pip install -e .
-.venv/bin/python -m pytest              # 186 tests, no display needed
+.venv/bin/python -m pytest              # 201 tests, no display needed
 ```
 
 The GUI tests run against Qt's offscreen platform, so the whole suite works over
@@ -241,7 +273,7 @@ photodupe/
 ├── imaging.py     decoding, EXIF, thumbnails
 ├── hashing.py     perceptual hashes and colour signatures
 ├── quality.py     the seven metrics and the score
-├── grouping.py    BK-tree + union-find clustering
+├── grouping.py    multi-index hash + union-find clustering
 ├── db.py          SQLite index
 ├── scanner.py     walking folders
 ├── library.py     the threaded scan pipeline
