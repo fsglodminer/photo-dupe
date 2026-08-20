@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Photo Dupe
+GenericName=Photo Deduplicator
+Comment=Find similar photos, rank them by quality, import and export
+Exec=photo-dupe gui
+Icon=photo-dupe
+Terminal=false
+Categories=Graphics;Photography;Viewer;Qt;
+Keywords=photo;duplicate;similar;quality;ranking;import;export;
+StartupNotify=true
+StartupWMClass=photo-dupe

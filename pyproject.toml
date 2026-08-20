@@ -1,0 +1,51 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "photo-dupe"
+version = "1.0.0"
+description = "Find similar photos, rank them by quality, import and export - a desktop app for Linux"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Photo Dupe contributors" }]
+keywords = ["photos", "duplicates", "deduplication", "image-quality", "ranking", "gui", "qt"]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Environment :: X11 Applications :: Qt",
+    "Intended Audience :: End Users/Desktop",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Multimedia :: Graphics",
+]
+dependencies = [
+    "PySide6-Essentials>=6.6",
+    "numpy>=1.24",
+    "Pillow>=10.0",
+    "send2trash>=1.8",
+]
+
+[project.optional-dependencies]
+heic = ["pillow-heif>=0.15"]
+dev = ["pytest>=7.4"]
+
+[project.urls]
+Homepage = "https://github.com/fsglodminer/photo-dupe"
+Issues = "https://github.com/fsglodminer/photo-dupe/issues"
+
+[project.scripts]
+photo-dupe = "photodupe.cli:main"
+
+[project.gui-scripts]
+photo-dupe-gui = "photodupe.cli:main"
+
+[tool.setuptools]
+packages = ["photodupe", "photodupe.ui", "photodupe.ui.pages"]
+
+[tool.setuptools.package-data]
+photodupe = ["py.typed"]

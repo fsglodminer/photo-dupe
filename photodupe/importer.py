@@ -110,9 +110,13 @@ def import_photos(
 ) -> ImportResult:
     """Copy or move every photo under ``sources`` into the library.
 
-    Duplicate rejection happens against both the existing library *and* the
-    files earlier in this same batch, so importing a card that contains its own
-    duplicates does the right thing in one pass.
+    Duplicate rejection happens against the *index*, against the files earlier
+    in this same batch, and against whatever already sits at the destination
+    path -- so importing a card that contains its own duplicates, or importing
+    the same card twice, both do the right thing in one pass.
+
+    Note that rejection can only see photos the index knows about, which is why
+    both the GUI and the CLI index the library right after importing into it.
     """
     started = time.time()
     result = ImportResult(moved=settings.import_mode == "move")
@@ -201,6 +205,19 @@ def import_photos(
         destination = destination_for(
             photo, source, library_root, settings.import_organise, source_root
         )
+        # Safety net for the commonest mistake: importing the same card twice
+        # into a library that has not been indexed yet. The index cannot help
+        # there, but the file sitting at the destination can.
+        if digest and destination.exists() and not dry_run:
+            try:
+                if file_digest(destination) == digest:
+                    result.skipped_duplicate += 1
+                    result.rejected.append(
+                        (str(source), "identical file", str(destination))
+                    )
+                    continue
+            except OSError:
+                pass
         try:
             if not dry_run:
                 destination.parent.mkdir(parents=True, exist_ok=True)

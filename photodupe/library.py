@@ -178,7 +178,10 @@ class Library:
                 return False
             return True
 
-        report(0, 0, "Looking for photos...")
+        if not report(0, 0, "Looking for photos..."):
+            result.cancelled = True
+            return result
+
         known = self.db.index_signature()
         found_files: list[FoundFile] = []
         for found in walk_images(
@@ -190,9 +193,14 @@ class Library:
         ):
             found_files.append(found)
             if len(found_files) % 200 == 0:
-                if not report(0, 0, f"Found {len(found_files)} photos..."):
-                    result.cancelled = True
-                    return result
+                report(0, 0, f"Found {len(found_files)} photos...")
+        # The walk stops silently when cancelled, so check the flag rather than
+        # inferring anything from how many files came back.
+        if cancelled["flag"]:
+            result.cancelled = True
+            result.scanned = len(found_files)
+            result.seconds = time.time() - started
+            return result
 
         result.scanned = len(found_files)
         seen_paths = {f.path for f in found_files}
